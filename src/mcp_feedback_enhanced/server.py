@@ -32,7 +32,7 @@ from typing import Annotated, Any
 
 from fastmcp import FastMCP
 from fastmcp.utilities.types import Image as MCPImage
-from mcp.types import TextContent
+from mcp.types import ImageContent, TextContent
 from pydantic import Field
 
 # 導入統一的調試功能
@@ -360,15 +360,15 @@ def create_feedback_text(feedback_data: dict) -> str:
     return "\n\n".join(text_parts) if text_parts else "用戶未提供任何回饋內容。"
 
 
-def process_images(images_data: list[dict]) -> list[MCPImage]:
+def process_images(images_data: list[dict]) -> list[ImageContent]:
     """
-    處理圖片資料，轉換為 MCP 圖片對象
+    處理圖片資料，轉換為 MCP ImageContent 對象
 
     Args:
         images_data: 圖片資料列表
 
     Returns:
-        List[MCPImage]: MCP 圖片對象列表
+        List[ImageContent]: MCP ImageContent 對象列表
     """
     mcp_images = []
 
@@ -403,12 +403,15 @@ def process_images(images_data: list[dict]) -> list[MCPImage]:
                 image_format = "jpeg"
             elif file_name.lower().endswith(".gif"):
                 image_format = "gif"
+            elif file_name.lower().endswith(".webp"):
+                image_format = "webp"
             else:
                 image_format = "png"  # 默認使用 PNG
 
-            # 創建 MCPImage 對象
-            mcp_image = MCPImage(data=image_bytes, format=image_format)
-            mcp_images.append(mcp_image)
+            # 創建 MCPImage 對象，然後轉換為 ImageContent
+            helper = MCPImage(data=image_bytes, format=image_format)
+            image_content: ImageContent = helper.to_image_content()
+            mcp_images.append(image_content)
 
             debug_log(f"圖片 {i} ({file_name}) 處理成功，格式: {image_format}")
 
