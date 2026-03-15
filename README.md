@@ -25,8 +25,10 @@ This is an [MCP server](https://modelcontextprotocol.io/) that establishes **fee
 2. **Interface Launch** → Auto-open desktop application or browser interface (based on configuration)
 3. **Smart Interaction** → Prompt selection, text input, image upload, auto-submit
 4. **Real-time Feedback** → WebSocket connection delivers information to AI instantly
-5. **Session Tracking** → Auto-record session history and statistics
-6. **Process Continuation** → AI adjusts behavior or ends task based on feedback
+5. **Session Binding** → In Web mode, each browser page is bound to a specific `session_id`
+6. **Workspace Routing** → Different workspaces keep separate pages; the same workspace reuses its existing page and switches to the latest session
+7. **Session Tracking** → Auto-record session history and statistics
+8. **Process Continuation** → AI adjusts behavior or ends task based on feedback
 
 ## 🌟 Key Features
 
@@ -40,6 +42,7 @@ This is an [MCP server](https://modelcontextprotocol.io/) that establishes **fee
 - **Prompt Management**: CRUD operations for common prompts, usage statistics, intelligent sorting
 - **Auto-Timed Submit**: 1-86400 second flexible timer, supports pause, resume, cancel with new pause/resume button controls
 - **Auto Command Execution** (v2.6.0): Automatically execute preset commands after creating new sessions or commits for improved development efficiency
+- **Multi-Workspace Web Sessions**: Different workspaces can stay active in parallel in separate browser pages; the same workspace page is reused and switched to the newest session
 - **Session Management & Tracking**: Local file storage, privacy controls, history export (supports JSON, CSV, Markdown formats), real-time statistics, flexible timeout settings
 - **Connection Monitoring**: WebSocket status monitoring, auto-reconnection, quality indicators
 - **AI Work Summary Markdown Display**: Support for rich Markdown syntax rendering including headers, bold text, code blocks, lists, links and other formats for enhanced content readability
@@ -105,7 +108,7 @@ pip install uv
       "command": "uvx",
       "args": ["mcp-feedback-enhanced@latest"],
       "timeout": 600,
-      "autoApprove": ["interactive_feedback"]
+      "autoApprove": ["feedback"]
     }
   }
 }
@@ -125,7 +128,7 @@ pip install uv
         "MCP_WEB_PORT": "8765",
         "MCP_LANGUAGE": "en"
       },
-      "autoApprove": ["interactive_feedback"]
+      "autoApprove": ["feedback"]
     }
   }
 }
@@ -145,7 +148,7 @@ pip install uv
         "MCP_WEB_PORT": "8765",
         "MCP_DEBUG": "false"
       },
-      "autoApprove": ["interactive_feedback"]
+      "autoApprove": ["feedback"]
     }
   }
 }
@@ -163,6 +166,12 @@ For optimal results, add the following rules to your AI assistant:
 
 follow mcp-feedback-enhanced instructions
 ```
+
+### 4. Web Session Behavior
+- In Web mode, each feedback page is bound to a concrete URL such as `/session/<session_id>`.
+- Different workspaces can keep separate active pages at the same time.
+- When the same workspace creates a new session, the existing page for that workspace is reused and redirected to the newest session instead of opening another duplicate page.
+- Compatibility endpoints such as `/api/current-session` and `/ws` only work unambiguously when there is exactly one active session. If multiple active sessions exist, they return an explicit ambiguity response instead of silently binding to the wrong workspace.
 
 ## ⚙️ Advanced Settings
 
@@ -283,7 +292,7 @@ Set `"MCP_WEB_HOST": "0.0.0.0"` in MCP configuration to allow remote access:
         "MCP_WEB_HOST": "0.0.0.0",
         "MCP_WEB_PORT": "8765"
       },
-      "autoApprove": ["interactive_feedback"]
+      "autoApprove": ["feedback"]
     }
   }
 }
@@ -322,7 +331,7 @@ A: v2.5.0 introduces cross-platform desktop application support. Set `"MCP_DESKT
         "MCP_DESKTOP_MODE": "true",
         "MCP_WEB_PORT": "8765"
       },
-      "autoApprove": ["interactive_feedback"]
+      "autoApprove": ["feedback"]
     }
   }
 }

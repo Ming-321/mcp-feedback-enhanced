@@ -21,7 +21,7 @@
     function FeedbackApp(sessionId) {
         // 會話信息
         this.sessionId = sessionId;
-        this.currentSessionId = null;
+        this.currentSessionId = sessionId;
 
         // 模組管理器
         this.tabManager = null;
@@ -90,6 +90,25 @@
             100,
             false
         );
+    };
+
+    FeedbackApp.prototype.getSessionApiUrl = function(sessionId) {
+        return '/api/sessions/' + encodeURIComponent(sessionId);
+    };
+
+    FeedbackApp.prototype.updateDocumentTitle = function(sessionInfo) {
+        if (!sessionInfo) return;
+
+        const workspaceDisplayName = sessionInfo.workspace_display_name;
+        if (workspaceDisplayName) {
+            document.title = workspaceDisplayName;
+            return;
+        }
+
+        if (sessionInfo.project_directory) {
+            const projectName = sessionInfo.project_directory.split(/[/\\]/).pop();
+            document.title = projectName;
+        }
     };
 
     /**
@@ -207,6 +226,7 @@
 
                         // 7. 初始化 WebSocket 管理器
                         self.webSocketManager = new window.MCPFeedback.WebSocketManager({
+                            sessionId: self.currentSessionId,
                             tabManager: self.tabManager,
                             connectionMonitor: self.connectionMonitor,
                             onOpen: function() {
@@ -820,183 +840,49 @@
     FeedbackApp.prototype._originalHandleSessionUpdated = function(data) {
         console.log('🔄 處理會話更新:', data);
         console.log('🔍 檢查 action 字段:', data.action);
-        console.log('🔍 檢查 type 字段:', data.type);
 
-        // 檢查是否是新會話創建的通知
-        if (data.action === 'new_session_created' || data.type === 'new_session_created') {
-            console.log('🆕 檢測到新會話創建，局部更新頁面內容');
-
-            // 播放音效通知
-            if (this.audioManager) {
-                this.audioManager.playNotification();
-            }
-            
-            // 執行新會話自動命令
-            this.executeAutoCommandOnNewSession();
-
-            // 發送瀏覽器通知
-            if (this.notificationManager && data.session_info) {
-                this.notificationManager.notifyNewSession(
-                    data.session_info.session_id,
-                    data.session_info.project_directory || data.project_directory || '未知專案'
-                );
-            }
-
-            // 顯示新會話通知
-            const defaultMessage = window.i18nManager ? 
-                window.i18nManager.t('session.created') : 
-                'New MCP session created, page will refresh automatically';
-            window.MCPFeedback.Utils.showMessage(
-                data.message || defaultMessage,
-                window.MCPFeedback.Utils.CONSTANTS.MESSAGE_SUCCESS
-            );
-
-            // 局部更新頁面內容而非開啟新視窗
-            const self = this;
-            setTimeout(function() {
-                console.log('🔄 執行局部更新頁面內容');
-
-                // 1. 更新會話資訊
-                if (data.session_info) {
-                    self.currentSessionId = data.session_info.session_id;
-                    console.log('📋 新會話 ID:', self.currentSessionId);
-                }
-
-                // 2. 刷新頁面內容（AI 摘要、表單等）
-                self.refreshPageContent();
-
-                // 3. 重置表單狀態
-                self.clearFeedback();
-
-                // 4. 重置回饋狀態為等待中
-                if (self.uiManager) {
-                    self.uiManager.setFeedbackState(window.MCPFeedback.Utils.CONSTANTS.FEEDBACK_WAITING, self.currentSessionId);
-                }
-                
-                // 5. 重新啟動會話超時計時器（如果已啟用）
-                if (self.settingsManager && self.settingsManager.get('sessionTimeoutEnabled')) {
-                    console.log('🔄 新會話創建，重新啟動會話超時計時器');
-                    const timeoutSettings = {
-                        enabled: self.settingsManager.get('sessionTimeoutEnabled'),
-                        seconds: self.settingsManager.get('sessionTimeoutSeconds')
-                    };
-                    self.webSocketManager.updateSessionTimeoutSettings(timeoutSettings);
-                }
-
-                // 6. 檢查並啟動自動提交
-                self.checkAndStartAutoSubmit();
-
-                console.log('✅ 局部更新完成，頁面已準備好接收新的回饋');
-            }, 500);
-
-            return; // 提前返回，不執行後續的局部更新邏輯
-        }
-
-        // 播放音效通知
         if (this.audioManager) {
             this.audioManager.playNotification();
         }
 
-        // 顯示更新通知
-        window.MCPFeedback.Utils.showMessage(data.message || '會話已更新，正在局部更新內容...', window.MCPFeedback.Utils.CONSTANTS.MESSAGE_SUCCESS);
-
-        // 更新會話信息
-        if (data.session_info) {
+        if (data.action === 'workspace_session_replaced' && data.navigate_to && data.session_info) {
             const newSessionId = data.session_info.session_id;
-            console.log('📋 會話 ID 更新: ' + this.currentSessionId + ' -> ' + newSessionId);
+            console.log('🔁 同工作區會話已替換，準備切換到新頁面:', newSessionId);
 
-            // 保存舊會話到歷史記錄（在更新當前會話之前）
-            if (this.currentSessionId && this.sessionManager && this.currentSessionId !== newSessionId) {
-                console.log('📋 嘗試獲取當前會話數據...');
-                // 從 SessionManager 獲取當前會話的完整數據
-                const currentSessionData = this.sessionManager.getCurrentSessionData();
-                console.log('📋 從 currentSession 獲取數據:', this.currentSessionId);
+            this.currentSessionId = newSessionId;
+            this.sessionId = newSessionId;
 
-                if (currentSessionData) {
-                    // 計算實際持續時間
-                    const now = Date.now() / 1000;
-                    let duration = 300; // 預設 5 分鐘
-
-                    if (currentSessionData.created_at) {
-                        let createdAt = currentSessionData.created_at;
-                        // 處理時間戳格式
-                        if (createdAt > 1e12) {
-                            createdAt = createdAt / 1000;
-                        }
-                        duration = Math.max(1, Math.round(now - createdAt));
-                    }
-
-                    const oldSessionData = {
-                        session_id: this.currentSessionId,
-                        status: 'completed',
-                        created_at: currentSessionData.created_at || (now - duration),
-                        completed_at: now,
-                        duration: duration,
-                        project_directory: currentSessionData.project_directory,
-                        summary: currentSessionData.summary
-                    };
-
-                    console.log('📋 準備將舊會話加入歷史記錄:', oldSessionData);
-
-                    // 先更新當前會話 ID，再調用 addSessionToHistory
-                    this.currentSessionId = newSessionId;
-
-                    // 更新會話管理器的當前會話（這樣 addSessionToHistory 檢查時就不會認為是當前活躍會話）
-                    if (this.sessionManager) {
-                        this.sessionManager.updateCurrentSession(data.session_info);
-                    }
-
-                    // 現在可以安全地將舊會話加入歷史記錄
-                    this.sessionManager.dataManager.addSessionToHistory(oldSessionData);
-                } else {
-                    console.log('⚠️ 無法獲取當前會話數據，跳過歷史記錄保存');
-                    // 仍然需要更新當前會話 ID
-                    this.currentSessionId = newSessionId;
-                    // 更新會話管理器
-                    if (this.sessionManager) {
-                        this.sessionManager.updateCurrentSession(data.session_info);
-                    }
-                }
-            } else {
-                // 沒有舊會話或會話 ID 相同，直接更新
-                this.currentSessionId = newSessionId;
-                // 更新會話管理器
-                if (this.sessionManager) {
-                    this.sessionManager.updateCurrentSession(data.session_info);
-                }
+            if (this.webSocketManager) {
+                this.webSocketManager.setSessionId(newSessionId);
             }
 
-            // 檢查當前狀態，只有在非已提交狀態時才重置
-            const currentState = this.uiManager.getFeedbackState();
-            if (currentState !== window.MCPFeedback.Utils.CONSTANTS.FEEDBACK_SUBMITTED) {
-                this.uiManager.setFeedbackState(window.MCPFeedback.Utils.CONSTANTS.FEEDBACK_WAITING, newSessionId);
-                console.log('🔄 會話更新：重置回饋狀態為等待新回饋');
-            } else {
-                console.log('🔒 會話更新：保護已提交狀態，不重置');
-                // 更新會話ID但保持已提交狀態
-                this.uiManager.setFeedbackState(window.MCPFeedback.Utils.CONSTANTS.FEEDBACK_SUBMITTED, newSessionId);
-            }
+            this.updateDocumentTitle(data.session_info);
 
-            // 檢查並啟動自動提交（如果條件滿足）
-            const self = this;
             setTimeout(function() {
-                self.checkAndStartAutoSubmit();
-            }, 200); // 延遲確保狀態更新完成
-
-            // 更新頁面標題
-            if (data.session_info.project_directory) {
-                const projectName = data.session_info.project_directory.split(/[/\\]/).pop();
-                document.title = 'MCP Feedback - ' + projectName;
-            }
-
-            // 使用局部更新替代整頁刷新
-            this.refreshPageContent();
-        } else {
-            console.log('⚠️ 會話更新沒有包含會話信息，僅重置狀態');
-            this.uiManager.setFeedbackState(window.MCPFeedback.Utils.CONSTANTS.FEEDBACK_WAITING);
+                window.location.assign(data.navigate_to);
+            }, 100);
+            return;
         }
 
-        console.log('✅ 會話更新處理完成');
+        if (data.session_info && data.session_info.session_id) {
+            this.currentSessionId = data.session_info.session_id;
+            this.sessionId = data.session_info.session_id;
+
+            if (this.webSocketManager) {
+                this.webSocketManager.setSessionId(this.currentSessionId);
+            }
+
+            if (this.sessionManager) {
+                this.sessionManager.updateCurrentSession(data.session_info);
+            }
+
+            this.updateDocumentTitle(data.session_info);
+            this.refreshPageContent();
+            console.log('✅ 會話更新處理完成');
+            return;
+        }
+
+        console.log('⚠️ 會話更新沒有包含會話信息');
     };
 
     /**
@@ -1032,10 +918,7 @@
         }
 
         // 更新頁面標題顯示會話信息
-        if (statusInfo.project_directory) {
-            const projectName = statusInfo.project_directory.split(/[/\\]/).pop();
-            document.title = 'MCP Feedback - ' + projectName;
-        }
+        this.updateDocumentTitle(statusInfo);
 
         // 使用之前已聲明的 sessionId
 
@@ -1045,6 +928,10 @@
         // 更新當前會話ID
         if (sessionId) {
             this.currentSessionId = sessionId;
+            this.sessionId = sessionId;
+            if (this.webSocketManager) {
+                this.webSocketManager.setSessionId(sessionId);
+            }
             console.log('🔄 更新當前會話ID:', sessionId.substring(0, 8) + '...');
         }
 
@@ -1668,10 +1555,13 @@
     FeedbackApp.prototype.handleSessionUpdate = function(sessionData) {
         console.log('🔄 處理自動檢測到的會話更新:', sessionData);
 
-        // 只更新當前會話 ID，不管理狀態
         this.currentSessionId = sessionData.session_id;
+        this.sessionId = sessionData.session_id;
+        if (this.webSocketManager) {
+            this.webSocketManager.setSessionId(this.currentSessionId);
+        }
+        this.updateDocumentTitle(sessionData);
 
-        // 局部更新頁面內容
         this.refreshPageContent();
     };
 
@@ -1683,7 +1573,12 @@
 
         const self = this;
 
-        fetch('/api/current-session')
+        if (!this.currentSessionId) {
+            console.warn('⚠️ 缺少 currentSessionId，無法刷新頁面內容');
+            return;
+        }
+
+        fetch(this.getSessionApiUrl(this.currentSessionId))
             .then(function(response) {
                 if (!response.ok) {
                     throw new Error('API 請求失敗: ' + response.status);
@@ -1708,17 +1603,14 @@
 
                 // 更新 AI 摘要內容
                 if (self.uiManager) {
-                    // console.log('🔧 準備更新 AI 摘要內容，summary 長度:', sessionData.summary ? sessionData.summary.length : 'undefined');
-                    self.uiManager.updateAISummaryContent(sessionData.summary);
+                    const sessionMessage = sessionData.message || sessionData.summary || '';
+                    self.uiManager.updateAISummaryContent(sessionMessage);
                     self.uiManager.resetFeedbackForm(false);  // 不清空文字內容
                     self.uiManager.updateStatusIndicator();
                 }
 
                 // 更新頁面標題
-                if (sessionData.project_directory) {
-                    const projectName = sessionData.project_directory.split(/[/\\]/).pop();
-                    document.title = 'MCP Feedback - ' + projectName;
-                }
+                self.updateDocumentTitle(sessionData);
 
                 console.log('✅ 局部更新完成');
             })

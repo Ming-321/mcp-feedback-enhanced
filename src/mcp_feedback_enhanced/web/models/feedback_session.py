@@ -39,6 +39,7 @@ class SessionStatus(Enum):
     ERROR = "error"  # 錯誤（終態）
     TIMEOUT = "timeout"  # 超時（終態）
     EXPIRED = "expired"  # 已過期（終態）
+    SUPERSEDED = "superseded"  # 已被同工作區新會話取代（終態）
 
 
 class CleanupReason(Enum):
@@ -123,13 +124,24 @@ class WebFeedbackSession:
         self,
         session_id: str,
         project_directory: str,
-        summary: str,
+        message: str,
         auto_cleanup_delay: int = 3600,
         max_idle_time: int = 1800,
+        workspace_key: str | None = None,
+        workspace_label: str | None = None,
+        workspace_display_name: str | None = None,
     ):
         self.session_id = session_id
         self.project_directory = project_directory
-        self.summary = summary
+        self.message = message
+        default_workspace_label = Path(project_directory).name or project_directory
+        self.workspace_key = workspace_key or project_directory
+        self.workspace_label = workspace_label or default_workspace_label
+        self.workspace_display_name = (
+            workspace_display_name or self.workspace_label
+        )
+        self.replaced_by_session_id: str | None = None
+        self.replaced_session_id: str | None = None
         self.websocket: WebSocket | None = None
         self.feedback_result: str | None = None
         self.images: list[dict] = []
@@ -211,6 +223,7 @@ class WebFeedbackSession:
             SessionStatus.ERROR: None,  # 終態
             SessionStatus.TIMEOUT: None,  # 終態
             SessionStatus.EXPIRED: None,  # 終態
+            SessionStatus.SUPERSEDED: None,  # 終態
         }
 
         next_status = next_status_map.get(self.status)
@@ -269,6 +282,41 @@ class WebFeedbackSession:
         )
         return True
 
+    def set_superseded(
+        self,
+        replacement_session_id: str,
+        message: str = "當前工作區已有新的回饋會話，舊會話已結束",
+    ) -> bool:
+        """設置為被新會話取代狀態，並結束等待中的 MCP 調用。"""
+        old_status = self.status
+        self.status = SessionStatus.SUPERSEDED
+        self.status_message = message
+        self.replaced_by_session_id = replacement_session_id
+        self.last_activity = time.time()
+        self.feedback_completed.set()
+
+        debug_log(
+            f"🔁 會話 {self.session_id} 已被新會話取代: "
+            f"{old_status.value} → {self.status.value}，新會話: {replacement_session_id}"
+        )
+        return True
+
+    def set_feedback_submitted(
+        self, message: str = "已送出反饋，等待下次 MCP 調用"
+    ) -> bool:
+        """直接設置為已提交反饋狀態。"""
+        old_status = self.status
+        self.status = SessionStatus.FEEDBACK_SUBMITTED
+        self.status_message = message
+        self.last_activity = time.time()
+        self._schedule_auto_cleanup()
+
+        debug_log(
+            f"✅ 會話 {self.session_id} 狀態更新: "
+            f"{old_status.value} → {self.status.value} - {message}"
+        )
+        return True
+
     def can_proceed(self) -> bool:
         """檢查是否可以進入下一步"""
         return self.status in [SessionStatus.WAITING, SessionStatus.FEEDBACK_SUBMITTED]
@@ -280,6 +328,7 @@ class WebFeedbackSession:
             SessionStatus.ERROR,
             SessionStatus.TIMEOUT,
             SessionStatus.EXPIRED,
+            SessionStatus.SUPERSEDED,
         ]
 
     def get_status_info(self) -> dict[str, Any]:
@@ -287,14 +336,28 @@ class WebFeedbackSession:
         return {
             "status": self.status.value,
             "message": self.status_message,
+            "status_message": self.status_message,
             "feedback_completed": self.feedback_completed.is_set(),
             "has_websocket": self.websocket is not None,
             "created_at": self.created_at,
             "last_activity": self.last_activity,
             "project_directory": self.project_directory,
-            "summary": self.summary,
+            "content_message": self.message,
             "session_id": self.session_id,
+            "workspace_key": self.workspace_key,
+            "workspace_label": self.workspace_label,
+            "workspace_display_name": self.workspace_display_name,
+            "replaced_by_session_id": self.replaced_by_session_id,
         }
+
+    @property
+    def summary(self) -> str:
+        """向後兼容舊欄位名稱。"""
+        return self.message
+
+    @summary.setter
+    def summary(self, value: str) -> None:
+        self.message = value
 
     def is_active(self) -> bool:
         """檢查會話是否活躍"""
@@ -327,6 +390,14 @@ class WebFeedbackSession:
             if error_time > 300:  # 錯誤狀態超過5分鐘視為過期
                 debug_log(
                     f"會話 {self.session_id} 錯誤狀態時間過長: {error_time:.1f}秒"
+                )
+                return True
+
+        if self.status == SessionStatus.SUPERSEDED:
+            superseded_time = current_time - self.last_activity
+            if superseded_time > 300:
+                debug_log(
+                    f"會話 {self.session_id} 被取代狀態時間過長: {superseded_time:.1f}秒"
                 )
                 return True
 
@@ -494,6 +565,25 @@ class WebFeedbackSession:
                     await self._cleanup_resources_on_timeout()
                     raise TimeoutError("會話已因用戶設定的超時而關閉")
 
+                if self.status == SessionStatus.SUPERSEDED:
+                    replacement_session_id = self.replaced_by_session_id or "unknown"
+                    replacement_message = (
+                        "同一工作區已有新的回饋會話建立，"
+                        f"當前會話已被取代。新會話 ID: {replacement_session_id}"
+                    )
+                    debug_log(
+                        f"會話 {self.session_id} 已被取代，結束等待並返回替代信息"
+                    )
+                    return {
+                        "logs": "\n".join(self.command_logs),
+                        "interactive_feedback": replacement_message,
+                        "images": [],
+                        "settings": {
+                            "superseded": True,
+                            "replacement_session_id": replacement_session_id,
+                        },
+                    }
+
                 debug_log(f"會話 {self.session_id} 收到用戶回饋")
                 return {
                     "logs": "\n".join(self.command_logs),
@@ -535,8 +625,8 @@ class WebFeedbackSession:
         self.settings = settings or {}
         self.images = self._process_images(images)
 
-        # 進入下一步：等待中 → 已提交反饋
-        self.next_step("已送出反饋，等待下次 MCP 調用")
+        # 提交回饋後直接進入已提交反饋狀態
+        self.set_feedback_submitted("已送出反饋，等待下次 MCP 調用")
 
         self.feedback_completed.set()
 
@@ -875,6 +965,8 @@ class WebFeedbackSession:
                 self.status = SessionStatus.TIMEOUT
             elif reason == CleanupReason.ERROR:
                 self.status = SessionStatus.ERROR
+            elif self.status == SessionStatus.SUPERSEDED:
+                debug_log(f"會話 {self.session_id} 保持被取代終態")
             else:
                 self.status = SessionStatus.COMPLETED
 

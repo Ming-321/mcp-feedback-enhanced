@@ -14,7 +14,7 @@ class TestData:
     SAMPLE_SESSION: Dict[str, Any] = {
         "session_id": "test-session-12345",
         "project_directory": "/test/project",
-        "summary": "測試 AI 工作摘要 - 已完成代碼重構",
+        "message": "測試 AI 工作摘要 - 已完成代碼重構",
         "status": "waiting",
         "timeout": 600
     }
@@ -173,7 +173,7 @@ class MockResponses:
             "result": {
                 "tools": [
                     {
-                        "name": "interactive_feedback",
+                        "name": "feedback",
                         "description": "收集用戶的互動回饋，支援文字和圖片",
                         "inputSchema": {
                             "type": "object",
@@ -182,9 +182,9 @@ class MockResponses:
                                     "type": "string",
                                     "description": "專案目錄路徑"
                                 },
-                                "summary": {
+                                "message": {
                                     "type": "string", 
-                                    "description": "AI 工作完成的摘要說明"
+                                    "description": "AI 發給用戶的說明或提問內容"
                                 },
                                 "timeout": {
                                     "type": "integer",
@@ -207,7 +207,7 @@ class TestScenarios:
         "steps": [
             "啟動 MCP 服務器",
             "初始化連接",
-            "調用 interactive_feedback 工具",
+            "調用 feedback 工具",
             "驗證回應格式"
         ],
         "expected_result": {

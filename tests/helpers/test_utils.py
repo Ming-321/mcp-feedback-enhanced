@@ -46,13 +46,13 @@ class TestUtils:
     def create_test_session_data(
         session_id: str = "test-session-123",
         project_directory: str = "/test/project",
-        summary: str = "測試摘要",
+        message: str = "測試摘要",
     ) -> dict[str, Any]:
         """創建測試會話數據"""
         return {
             "session_id": session_id,
             "project_directory": project_directory,
-            "summary": summary,
+            "message": message,
             "status": "waiting",
             "created_at": time.time(),
             "last_activity": time.time(),
@@ -81,8 +81,9 @@ class TestUtils:
     @staticmethod
     def validate_session_info(session_info: dict[str, Any]) -> bool:
         """驗證會話信息格式"""
-        required_fields = ["session_id", "project_directory", "summary", "status"]
-        return all(field in session_info for field in required_fields)
+        base_fields = ["session_id", "project_directory", "status"]
+        has_content_field = "message" in session_info or "summary" in session_info
+        return all(field in session_info for field in base_fields) and has_content_field
 
 
 class MockWebSocketClient:

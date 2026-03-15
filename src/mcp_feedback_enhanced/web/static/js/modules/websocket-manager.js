@@ -21,6 +21,7 @@
         this.websocket = null;
         this.isConnected = false;
         this.connectionReady = false;
+        this.sessionId = options.sessionId || null;
         this.reconnectAttempts = 0;
         this.maxReconnectAttempts = options.maxReconnectAttempts || Utils.CONSTANTS.MAX_RECONNECT_ATTEMPTS;
         this.reconnectDelay = options.reconnectDelay || Utils.CONSTANTS.DEFAULT_RECONNECT_DELAY;
@@ -67,10 +68,15 @@
             return;
         }
 
+        if (!this.sessionId) {
+            console.error('❌ 缺少 sessionId，無法建立 WebSocket 連接');
+            return;
+        }
+
         // 確保 WebSocket URL 格式正確
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const host = window.location.host;
-        const wsUrl = protocol + '//' + host + '/ws';
+        const wsUrl = protocol + '//' + host + '/ws/' + encodeURIComponent(this.sessionId);
 
         console.log('嘗試連接 WebSocket:', wsUrl);
         const connectingMessage = window.i18nManager ? window.i18nManager.t('connectionMonitor.connecting') : '連接中...';
@@ -94,6 +100,10 @@
             const connectionFailedMessage = window.i18nManager ? window.i18nManager.t('connectionMonitor.connectionFailed') : '連接失敗';
             this.updateConnectionStatus('error', connectionFailedMessage);
         }
+    };
+
+    WebSocketManager.prototype.setSessionId = function(sessionId) {
+        this.sessionId = sessionId || null;
     };
 
     /**

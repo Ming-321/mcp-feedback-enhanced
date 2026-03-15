@@ -87,10 +87,10 @@ class SimpleMCPClient:
 
         return False
 
-    async def call_interactive_feedback(
-        self, project_directory: str, summary: str, timeout: int = 30
+    async def call_feedback(
+        self, project_directory: str, message: str, timeout: int = 30
     ) -> dict[str, Any]:
-        """調用 interactive_feedback 工具"""
+        """調用 feedback 工具"""
         if not self.initialized:
             return {"error": "MCP 客戶端未初始化"}
 
@@ -100,10 +100,10 @@ class SimpleMCPClient:
                 "id": 2,
                 "method": "tools/call",
                 "params": {
-                    "name": "interactive_feedback",
+                    "name": "feedback",
                     "arguments": {
                         "project_directory": project_directory,
-                        "summary": summary,
+                        "message": message,
                         "timeout": timeout,
                     },
                 },
@@ -196,7 +196,7 @@ class MCPWorkflowTester:
         self.client = SimpleMCPClient(timeout)
 
     async def test_basic_workflow(
-        self, project_dir: str, summary: str
+        self, project_dir: str, message: str
     ) -> dict[str, Any]:
         """測試基本工作流程"""
         result: dict[str, Any] = {
@@ -222,18 +222,18 @@ class MCPWorkflowTester:
                     result["errors"].append("初始化失敗")
                     return result
 
-                # 3. 調用 interactive_feedback
-                feedback_result = await self.client.call_interactive_feedback(
-                    project_dir, summary, timeout=10
+                # 3. 調用 feedback
+                feedback_result = await self.client.call_feedback(
+                    project_dir, message, timeout=10
                 )
 
                 if "error" not in feedback_result:
-                    result["steps"]["interactive_feedback_called"] = True
+                    result["steps"]["feedback_called"] = True
                     result["feedback_result"] = feedback_result
                     result["success"] = True
                 else:
                     result["errors"].append(
-                        f"interactive_feedback 調用失敗: {feedback_result['error']}"
+                        f"feedback 調用失敗: {feedback_result['error']}"
                     )
 
             except Exception as e:

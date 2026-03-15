@@ -152,7 +152,7 @@
                 status: statusInfo.status,
                 created_at: statusInfo.created_at,
                 project_directory: statusInfo.project_directory || this.getProjectDirectory(),
-                summary: statusInfo.summary || this.getAISummary()
+                message: statusInfo.content_message || statusInfo.message || statusInfo.summary || this.getAISummary()
             };
 
             // 檢查會話是否完成
@@ -328,12 +328,15 @@
      */
     SessionDataManager.prototype.sendUserMessageToServer = function(userMessage) {
         const lang = window.i18nManager ? window.i18nManager.getCurrentLanguage() : 'zh-TW';
+        const payload = Object.assign({}, userMessage, {
+            session_id: this.currentSession ? this.currentSession.session_id : null
+        });
         fetch('/api/add-user-message?lang=' + lang, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify(userMessage)
+            body: JSON.stringify(payload)
         })
         .then(function(response) {
             if (response.ok) {
@@ -610,7 +613,7 @@
                 const element = document.querySelector('#combinedSummaryContent');
                 return element?.textContent?.trim();
             },
-            () => this.currentSession?.summary
+            () => this.currentSession?.message || this.currentSession?.summary
         ];
 
         for (const source of sources) {
@@ -932,7 +935,7 @@
                     duration: session.duration,
                     status: session.status,
                     project_directory: session.project_directory,
-                    ai_summary: session.summary || session.ai_summary,
+                    ai_summary: session.message || session.summary || session.ai_summary,
                     saved_at: session.saved_at
                 };
 
@@ -973,7 +976,7 @@
             duration: session.duration,
             status: session.status,
             project_directory: session.project_directory,
-            ai_summary: session.summary || session.ai_summary,
+            ai_summary: session.message || session.summary || session.ai_summary,
             saved_at: session.saved_at
         };
 

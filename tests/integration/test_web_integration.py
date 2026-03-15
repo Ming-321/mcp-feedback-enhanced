@@ -5,6 +5,7 @@ Web UI 集成測試
 
 import asyncio
 import time
+from pathlib import Path
 
 import pytest
 
@@ -52,7 +53,7 @@ class TestWebUIIntegration:
 
         # 創建會話
         session_id = web_ui_manager.create_session(
-            str(test_project_dir), TestData.SAMPLE_SESSION["summary"]
+            str(test_project_dir), TestData.SAMPLE_SESSION["message"]
         )
 
         # 啟動服務器
@@ -68,8 +69,14 @@ class TestWebUIIntegration:
                 data = await response.json()
 
                 assert data["session_id"] == session_id
-                assert data["project_directory"] == str(test_project_dir)
-                assert data["summary"] == TestData.SAMPLE_SESSION["summary"]
+                assert Path(data["project_directory"]).resolve() == test_project_dir.resolve()
+                assert data["message"] == TestData.SAMPLE_SESSION["message"]
+
+            async with session.get(f"{base_url}/api/sessions/{session_id}") as response:
+                assert response.status == 200
+                data = await response.json()
+                assert data["session_id"] == session_id
+                assert data["workspace_display_name"] == "test_project"
 
     @pytest.mark.asyncio
     async def test_websocket_connection(self, web_ui_manager, test_project_dir):
@@ -78,14 +85,19 @@ class TestWebUIIntegration:
 
         # 創建會話
         web_ui_manager.create_session(
-            str(test_project_dir), TestData.SAMPLE_SESSION["summary"]
+            str(test_project_dir), TestData.SAMPLE_SESSION["message"]
         )
+
+        session = web_ui_manager.get_current_session()
+        assert session is not None
 
         # 啟動服務器
         web_ui_manager.start_server()
         await asyncio.sleep(3)
 
-        ws_url = f"ws://{web_ui_manager.host}:{web_ui_manager.port}/ws"
+        ws_url = (
+            f"ws://{web_ui_manager.host}:{web_ui_manager.port}/ws/{session.session_id}"
+        )
 
         async with aiohttp.ClientSession() as session:
             try:
@@ -143,6 +155,7 @@ class TestWebUISessionManagement:
         """測試會話生命週期"""
         # 1. 創建會話
         session_id = web_ui_manager.create_session(str(test_project_dir), "第一個會話")
+        first_session = web_ui_manager.get_session(session_id)
 
         current_session = web_ui_manager.get_current_session()
         assert current_session is not None
@@ -156,20 +169,21 @@ class TestWebUISessionManagement:
         # 當前會話應該切換到新會話
         current_session = web_ui_manager.get_current_session()
         assert current_session.session_id == session_id_2
-        assert current_session.summary == "第二個會話"
+        assert current_session.message == "第二個會話"
+        assert first_session is not None
+        assert first_session.status.value == "superseded"
 
         # 3. 測試會話狀態更新
-        from mcp_feedback_enhanced.web.models import SessionStatus
-
-        current_session.update_status(SessionStatus.FEEDBACK_SUBMITTED, "已提交回饋")
-        assert current_session.status == SessionStatus.FEEDBACK_SUBMITTED
+        current_session.next_step("會話已激活")
+        current_session.next_step("已提交回饋")
+        assert current_session.status.value == "feedback_submitted"
 
     @pytest.mark.asyncio
     async def test_session_feedback_flow(self, web_ui_manager, test_project_dir):
         """測試會話回饋流程"""
         # 創建會話
         web_ui_manager.create_session(
-            str(test_project_dir), TestData.SAMPLE_SESSION["summary"]
+            str(test_project_dir), TestData.SAMPLE_SESSION["message"]
         )
 
         session = web_ui_manager.get_current_session()
@@ -196,7 +210,7 @@ class TestWebUISessionManagement:
         """測試會話超時處理"""
         # 創建會話，設置短超時
         web_ui_manager.create_session(
-            str(test_project_dir), TestData.SAMPLE_SESSION["summary"]
+            str(test_project_dir), TestData.SAMPLE_SESSION["message"]
         )
 
         session = web_ui_manager.get_current_session()
@@ -276,6 +290,30 @@ class TestWebUIErrorHandling:
             except TimeoutError:
                 # 超時也可能是預期的行為
                 assert True
+
+    @pytest.mark.asyncio
+    async def test_websocket_compat_ambiguous_with_multiple_sessions(
+        self, web_ui_manager, temp_dir
+    ):
+        """測試多活躍會話時兼容 WebSocket 入口拒絕綁定。"""
+        import aiohttp
+
+        workspace_a = temp_dir / "workspace_a"
+        workspace_b = temp_dir / "workspace_b"
+        workspace_a.mkdir()
+        workspace_b.mkdir()
+
+        web_ui_manager.create_session(str(workspace_a), "工作區 A")
+        web_ui_manager.create_session(str(workspace_b), "工作區 B")
+
+        web_ui_manager.start_server()
+        await asyncio.sleep(3)
+
+        ws_url = f"ws://{web_ui_manager.host}:{web_ui_manager.port}/ws"
+
+        async with aiohttp.ClientSession() as session:
+            with pytest.raises(aiohttp.WSServerHandshakeError):
+                await session.ws_connect(ws_url)
 
 
 class TestWebUIPerformance:

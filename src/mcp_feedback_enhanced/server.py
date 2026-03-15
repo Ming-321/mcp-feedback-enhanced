@@ -15,7 +15,7 @@ MCP Feedback Enhanced 伺服器主要模組
 - 專案目錄管理
 
 主要 MCP 工具：
-- interactive_feedback: 收集用戶互動回饋
+- feedback: 收集用戶互動回饋
 - get_system_info: 獲取系統環境資訊
 
 作者: Fábio Ferreira (原作者)
@@ -429,11 +429,11 @@ def process_images(images_data: list[dict]) -> list[ImageContent]:
 
 
 # ===== MCP 工具定義 =====
-@mcp.tool()
-async def interactive_feedback(
+@mcp.tool(name="feedback")
+async def feedback(
     project_directory: Annotated[str, Field(description="專案目錄路徑")] = ".",
-    summary: Annotated[
-        str, Field(description="AI 工作完成的摘要說明")
+    message: Annotated[
+        str, Field(description="AI 發給用戶的說明或提問內容")
     ] = "我已完成了您請求的任務。",
     timeout: Annotated[int, Field(description="等待用戶回饋的超時時間（秒）")] = 2400,
 ) -> list:
@@ -448,7 +448,7 @@ async def interactive_feedback(
 
     Args:
         project_directory: Project directory path for context
-        summary: Summary of AI work completed for user review
+        message: Message from the AI for user review or reply
         timeout: Timeout in seconds for waiting user feedback (default: 600 seconds)
 
     Returns:
@@ -470,7 +470,7 @@ async def interactive_feedback(
         # 使用 Web 模式
         debug_log("回饋模式: web")
 
-        result = await launch_web_feedback_ui(project_directory, summary, timeout)
+        result = await launch_web_feedback_ui(project_directory, message, timeout)
 
         # 處理取消情況
         if not result:
@@ -523,13 +523,13 @@ async def interactive_feedback(
         return [TextContent(type="text", text=user_error_msg)]
 
 
-async def launch_web_feedback_ui(project_dir: str, summary: str, timeout: int) -> dict:
+async def launch_web_feedback_ui(project_dir: str, message: str, timeout: int) -> dict:
     """
     啟動 Web UI 收集回饋，支援自訂超時時間
 
     Args:
         project_dir: 專案目錄路徑
-        summary: AI 工作摘要
+        message: AI 發給用戶的說明或提問內容
         timeout: 超時時間（秒）
 
     Returns:
@@ -542,7 +542,7 @@ async def launch_web_feedback_ui(project_dir: str, summary: str, timeout: int) -
         from .web import launch_web_feedback_ui as web_launch
 
         # 傳遞 timeout 參數給 Web UI
-        return await web_launch(project_dir, summary, timeout)
+        return await web_launch(project_dir, message, timeout)
     except ImportError as e:
         # 使用統一錯誤處理
         error_id = ErrorHandler.log_error_with_context(

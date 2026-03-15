@@ -6,17 +6,17 @@
 
 MCP Feedback Enhanced 基於 FastMCP 框架實現，提供標準的 MCP 協議支援。
 
-### interactive_feedback
+### feedback
 
 AI 助手與用戶進行交互式回饋的核心 MCP 工具。
 
 #### 函數簽名
 ```python
-async def interactive_feedback(
+async def feedback(
     project_directory: str,
-    summary: str,
-    timeout: int = 600
-) -> dict
+    message: str,
+    timeout: int = 2400
+) -> list
 ```
 
 #### 參數說明
@@ -24,30 +24,26 @@ async def interactive_feedback(
 | 參數 | 類型 | 必需 | 預設值 | 描述 |
 |------|------|------|--------|------|
 | `project_directory` | `str` | ✅ | - | 專案目錄路徑，用於上下文顯示 |
-| `summary` | `str` | ✅ | - | AI 助手的工作摘要，向用戶說明當前狀態 |
-| `timeout` | `int` | ❌ | `600` | 等待用戶回饋的超時時間（秒） |
+| `message` | `str` | ✅ | - | AI 發給用戶的說明或提問內容 |
+| `timeout` | `int` | ❌ | `2400` | 等待用戶回饋的超時時間（秒） |
 
 #### 返回值
-```python
-{
-    "command_logs": "",  # 命令執行日誌（保留字段）
-    "interactive_feedback": str,  # 用戶回饋內容
-    "images": List[str]  # 用戶上傳的圖片（Base64 編碼）
-}
-```
+- 返回 `list`，內容由 `TextContent` 與可選的圖片項目組成。
+- 文字回饋中會整合用戶輸入、命令輸出與圖片摘要。
+- 若同一工作區已有新的回饋會話建立，舊會話會以明確的「已被新會話取代」文字結果收尾，而不是默默掛起。
 
 #### 使用示例
 ```python
 # 基本調用
-result = await interactive_feedback(
+result = await feedback(
     project_directory="./my-web-app",
-    summary="我已完成登入功能的實現，包括表單驗證和錯誤處理。請檢查代碼品質。"
+    message="我已完成登入功能的實現，包括表單驗證和錯誤處理。請檢查代碼品質。"
 )
 
 # 自定義超時
-result = await interactive_feedback(
+result = await feedback(
     project_directory="./complex-project",
-    summary="重構完成，請詳細測試所有功能模組。",
+    message="重構完成，請詳細測試所有功能模組。",
     timeout=1200  # 20分鐘
 )
 ```
@@ -55,7 +51,7 @@ result = await interactive_feedback(
 #### 錯誤處理
 ```python
 try:
-    result = await interactive_feedback(...)
+    result = await feedback(...)
 except TimeoutError:
     print("用戶回饋超時")
 except ValidationError as e:
@@ -69,12 +65,15 @@ except EnvironmentError as e:
 ### HTTP 端點
 
 #### GET /
-主頁重定向到回饋頁面。
+兼容首頁入口。
 
-**響應**: `302 Redirect` → `/feedback`
+**行為**:
+- `0` 個活躍會話：顯示等待頁面
+- `1` 個活躍會話：`307 Redirect` 到 `/session/{session_id}`
+- `>1` 個活躍會話：顯示等待頁面，並要求使用具體會話 URL
 
-#### GET /feedback
-回饋頁面主入口。
+#### GET /session/{session_id}
+指定會話頁面主入口。
 
 **響應**: `200 OK`
 ```html
@@ -117,7 +116,12 @@ except EnvironmentError as e:
 ```
 
 #### GET /api/session-status
-獲取當前會話狀態。
+獲取兼容的當前會話狀態。
+
+**行為**:
+- `0` 個活躍會話：`has_session=false`
+- `1` 個活躍會話：返回該活躍會話摘要
+- `>1` 個活躍會話：`409 ambiguous`
 
 **響應**: `200 OK`
 ```json
@@ -126,40 +130,76 @@ except EnvironmentError as e:
     "status": "active",
     "session_info": {
         "project_directory": "./my-project",
-        "summary": "代碼審查完成",
+        "message": "代碼審查完成",
         "feedback_completed": false
     }
 }
 ```
 
 #### GET /api/current-session
-獲取當前會話詳細信息。
+兼容接口，僅在只有一個活躍會話時返回。
 
 **響應**: `200 OK`
 ```json
 {
     "session_id": "550e8400-e29b-41d4-a716-446655440000",
     "project_directory": "./my-project",
-    "summary": "代碼審查完成",
+    "message": "代碼審查完成",
     "feedback_completed": false,
     "command_logs": "",
-    "images_count": 0
+    "images_count": 0,
+    "workspace_key": "/abs/path/to/my-project",
+    "workspace_label": "my-project",
+    "workspace_display_name": "my-project"
+}
+```
+
+**錯誤響應**:
+- `404 Not Found`：沒有活躍會話
+- `409 Conflict`：存在多個活躍會話，需改用具體 `session_id`
+
+#### GET /api/sessions/{session_id}
+獲取指定會話詳細信息。
+
+**響應**: `200 OK`
+```json
+{
+    "session_id": "550e8400-e29b-41d4-a716-446655440000",
+    "project_directory": "./my-project",
+    "message": "代碼審查完成",
+    "feedback_completed": false,
+    "command_logs": [],
+    "images_count": 0,
+    "workspace_key": "/abs/path/to/my-project",
+    "workspace_label": "my-project",
+    "workspace_display_name": "my-project",
+    "status": "waiting",
+    "status_message": "等待用戶回饋",
+    "replaced_by_session_id": null
 }
 ```
 
 **錯誤響應**: `404 Not Found`
 ```json
 {
-    "error": "沒有活躍會話"
+    "error": "Session not found"
 }
 ```
 
 ### WebSocket API
 
 #### 連接端點
+主要端點：
+```
+ws://localhost:{port}/ws/{session_id}
+```
+
+兼容端點：
 ```
 ws://localhost:{port}/ws
 ```
+
+兼容端點只在單一活躍會話時可用；多活躍會話時會回傳歧義關閉。
 
 #### 訊息格式
 所有 WebSocket 訊息都使用 JSON 格式：
@@ -210,6 +250,15 @@ ws://localhost:{port}/ws
 }
 ```
 
+#### get_status
+請求指定會話的最新狀態。
+
+```json
+{
+    "type": "get_status"
+}
+```
+
 #### language_switch
 切換界面語言。
 
@@ -219,6 +268,42 @@ ws://localhost:{port}/ws
     "data": {
         "language": "en"
     }
+}
+```
+
+### 📥 服務器 → 客戶端訊息
+
+#### status_update
+返回指定會話的最新狀態。
+
+```json
+{
+    "type": "status_update",
+    "status_info": {
+        "session_id": "550e8400-e29b-41d4-a716-446655440000",
+        "status": "waiting",
+        "message": "等待用戶回饋",
+        "project_directory": "./my-project",
+        "workspace_display_name": "my-project"
+    }
+}
+```
+
+#### session_updated
+同工作區有新會話建立時，通知舊頁面切換到新會話。
+
+```json
+{
+    "type": "session_updated",
+    "action": "workspace_session_replaced",
+    "session_info": {
+        "session_id": "new-session-id",
+        "project_directory": "./my-project",
+        "message": "新的 AI 工作內容",
+        "status": "waiting",
+        "workspace_display_name": "my-project"
+    },
+    "navigate_to": "http://127.0.0.1:8765/session/new-session-id"
 }
 ```
 
@@ -369,7 +454,7 @@ WebSocket 連接建立確認。
     "type": "session_updated",
     "data": {
         "session_id": "new-session-id",
-        "summary": "根據您的建議，我已修改了錯誤處理邏輯。",
+        "message": "根據您的建議，我已修改了錯誤處理邏輯。",
         "project_directory": "./my-project",
         "timestamp": "2024-12-XX 10:35:00"
     }
@@ -435,7 +520,7 @@ WebSocket 連接建立確認。
         "sessions": [
             {
                 "session_id": "session-1",
-                "summary": "代碼審查完成",
+                "message": "代碼審查完成",
                 "status": "completed",
                 "created_at": "2024-12-13T10:30:00Z",
                 "completed_at": "2024-12-13T10:35:00Z",
@@ -556,7 +641,7 @@ WebSocket 連接建立確認。
 ```python
 async def create_session(
     self,
-    summary: str,
+    message: str,
     project_directory: str
 ) -> WebFeedbackSession
 ```

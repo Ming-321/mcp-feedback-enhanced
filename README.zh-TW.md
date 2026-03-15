@@ -25,8 +25,10 @@
 2. **介面啟動** → 自動開啟桌面應用程式或瀏覽器介面（根據配置）
 3. **智能互動** → 提示詞選擇、文字輸入、圖片上傳、自動提交
 4. **即時回饋** → WebSocket 連線即時傳遞資訊給 AI
-5. **會話追蹤** → 自動記錄會話歷史與統計
-6. **流程繼續** → AI 根據回饋調整行為或結束任務
+5. **會話綁定** → 在 Web 模式下，每個瀏覽器頁面都會綁定到一個明確的 `session_id`
+6. **工作區路由** → 不同工作區可維持獨立頁面；同一工作區會復用既有頁面並切換到最新會話
+7. **會話追蹤** → 自動記錄會話歷史與統計
+8. **流程繼續** → AI 根據回饋調整行為或結束任務
 
 ## 🌟 主要功能
 
@@ -40,6 +42,7 @@
 - **提示詞管理**：常用提示詞的 CRUD 操作、使用統計、智能排序
 - **自動定時提交**：1-86400 秒彈性計時器，支援暫停、恢復、取消，新增暫停/開始按鈕控制
 - **自動執行命令**（v2.6.0）：新建會話和提交後可自動執行預設命令，提升開發效率
+- **多工作區 Web 會話**：不同工作區可以在獨立瀏覽器頁面中並行保持活躍；同一工作區會復用原頁面並切換到最新會話
 - **會話管理追蹤**：本地檔案存儲、隱私控制、歷史匯出（支援 JSON、CSV、Markdown 格式）、即時統計、彈性超時設定
 - **連線監控**：WebSocket 狀態監控、自動重連、品質指示
 - **AI 工作摘要 Markdown 顯示**：支援豐富的 Markdown 語法渲染，包含標題、粗體、程式碼區塊、列表、連結等格式，提升內容可讀性
@@ -105,7 +108,7 @@ pip install uv
       "command": "uvx",
       "args": ["mcp-feedback-enhanced@latest"],
       "timeout": 600,
-      "autoApprove": ["interactive_feedback"]
+      "autoApprove": ["feedback"]
     }
   }
 }
@@ -125,7 +128,7 @@ pip install uv
         "MCP_WEB_PORT": "8765",
         "MCP_LANGUAGE": "zh-TW"
       },
-      "autoApprove": ["interactive_feedback"]
+      "autoApprove": ["feedback"]
     }
   }
 }
@@ -145,7 +148,7 @@ pip install uv
         "MCP_WEB_PORT": "8765",
         "MCP_DEBUG": "false"
       },
-      "autoApprove": ["interactive_feedback"]
+      "autoApprove": ["feedback"]
     }
   }
 }
@@ -163,6 +166,12 @@ pip install uv
 
 注意在任務完成前根據mcp-feedback-enhanced工具的要求進行工具調用
 ```
+
+### 4. Web 會話行為
+- 在 Web 模式下，每個回饋頁面都會綁定到具體的 URL，例如 `/session/<session_id>`。
+- 不同工作區可以同時維持各自獨立的活躍頁面。
+- 同一工作區再次建立新會話時，會復用原有頁面並跳轉到最新會話，而不是再開一個重複頁面。
+- 相容接口 `/api/current-session` 與 `/ws` 只會在「目前只有一個活躍會話」時返回明確結果；若同時存在多個活躍會話，會顯式回傳歧義錯誤，而不是靜默綁定到錯誤工作區。
 
 ## ⚙️ 進階設定
 
@@ -284,7 +293,7 @@ A: 提供兩種解決方案：
         "MCP_WEB_HOST": "0.0.0.0",
         "MCP_WEB_PORT": "8765"
       },
-      "autoApprove": ["interactive_feedback"]
+      "autoApprove": ["feedback"]
     }
   }
 }
@@ -323,7 +332,7 @@ A: v2.5.0 新增跨平台桌面應用程式支援。在 MCP 配置中設定 `"MC
         "MCP_DESKTOP_MODE": "true",
         "MCP_WEB_PORT": "8765"
       },
-      "autoApprove": ["interactive_feedback"]
+      "autoApprove": ["feedback"]
     }
   }
 }

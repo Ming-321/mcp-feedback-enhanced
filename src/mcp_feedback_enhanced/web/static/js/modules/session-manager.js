@@ -446,7 +446,7 @@
                     status: this.getCurrentSessionStatus(),
                     created_at: this.getSessionCreatedTime(),
                     project_directory: this.getProjectDirectory(),
-                    summary: this.getAISummary()
+                    message: this.getAISummary()
                 };
             }
         }
@@ -459,7 +459,7 @@
                 status: this.getCurrentSessionStatus(),
                 created_at: this.getSessionCreatedTime(),
                 project_directory: this.getProjectDirectory(),
-                summary: this.getAISummary()
+                message: this.getAISummary()
             };
         }
 
@@ -866,7 +866,7 @@
         lines.push('');
         lines.push(`**会话ID**: ${sessionData.session_id || 'N/A'}`);
         lines.push(`**项目目录**: ${sessionData.project_directory || 'N/A'}`);
-        lines.push(`**摘要**: ${sessionData.summary || 'N/A'}`);
+        lines.push(`**摘要**: ${sessionData.message || sessionData.summary || 'N/A'}`);
         lines.push(`**状态**: ${sessionData.status || 'N/A'}`);
         lines.push(`**创建时间**: ${sessionData.created_at || 'N/A'}`);
         lines.push(`**更新时间**: ${sessionData.updated_at || 'N/A'}`);

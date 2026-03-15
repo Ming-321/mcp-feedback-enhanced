@@ -4,6 +4,7 @@ Web UI 單元測試
 """
 
 import time
+from pathlib import Path
 
 import pytest
 
@@ -25,7 +26,7 @@ class TestWebUIManager:
         """測試會話管理"""
         # 測試創建會話
         session_id = web_ui_manager.create_session(
-            str(test_project_dir), TestData.SAMPLE_SESSION["summary"]
+            str(test_project_dir), TestData.SAMPLE_SESSION["message"]
         )
 
         assert session_id is not None
@@ -35,13 +36,14 @@ class TestWebUIManager:
         current_session = web_ui_manager.get_current_session()
         assert current_session is not None
         assert current_session.session_id == session_id
-        assert current_session.project_directory == str(test_project_dir)
-        assert current_session.summary == TestData.SAMPLE_SESSION["summary"]
+        assert Path(current_session.project_directory).resolve() == test_project_dir.resolve()
+        assert current_session.message == TestData.SAMPLE_SESSION["message"]
 
     def test_session_switching(self, web_ui_manager, test_project_dir):
-        """測試會話切換"""
+        """測試同工作區會話替換"""
         # 創建第一個會話
-        web_ui_manager.create_session(str(test_project_dir), "第一個會話")
+        session_id_1 = web_ui_manager.create_session(str(test_project_dir), "第一個會話")
+        first_session = web_ui_manager.get_session(session_id_1)
 
         # 創建第二個會話
         session_id_2 = web_ui_manager.create_session(
@@ -51,7 +53,30 @@ class TestWebUIManager:
         # 驗證當前會話是最新的
         current_session = web_ui_manager.get_current_session()
         assert current_session.session_id == session_id_2
-        assert current_session.summary == "第二個會話"
+        assert current_session.message == "第二個會話"
+        assert first_session is not None
+        assert first_session.status.value == "superseded"
+        assert first_session.replaced_by_session_id == session_id_2
+
+    def test_multi_workspace_sessions(self, web_ui_manager, temp_dir):
+        """測試不同工作區可以同時保持活躍。"""
+        workspace_a = temp_dir / "workspace_a"
+        workspace_b = temp_dir / "workspace_b"
+        workspace_a.mkdir()
+        workspace_b.mkdir()
+
+        session_id_a = web_ui_manager.create_session(str(workspace_a), "工作區 A")
+        session_id_b = web_ui_manager.create_session(str(workspace_b), "工作區 B")
+
+        session_a = web_ui_manager.get_session(session_id_a)
+        session_b = web_ui_manager.get_session(session_id_b)
+
+        assert session_a is not None
+        assert session_b is not None
+        assert session_a.is_active()
+        assert session_b.is_active()
+        assert web_ui_manager.get_active_session_count() == 2
+        assert web_ui_manager.get_single_active_session() is None
 
     def test_global_tabs_management(self, web_ui_manager):
         """測試全局標籤頁管理"""
@@ -84,12 +109,12 @@ class TestWebFeedbackSession:
         from mcp_feedback_enhanced.web.models import WebFeedbackSession
 
         session = WebFeedbackSession(
-            "test-session", str(test_project_dir), TestData.SAMPLE_SESSION["summary"]
+            "test-session", str(test_project_dir), TestData.SAMPLE_SESSION["message"]
         )
 
         assert session.session_id == "test-session"
         assert session.project_directory == str(test_project_dir)
-        assert session.summary == TestData.SAMPLE_SESSION["summary"]
+        assert session.message == TestData.SAMPLE_SESSION["message"]
         assert session.websocket is None
         assert session.feedback_result is None
         assert len(session.images) == 0
@@ -102,7 +127,7 @@ class TestWebFeedbackSession:
         )
 
         session = WebFeedbackSession(
-            "test-session", str(test_project_dir), TestData.SAMPLE_SESSION["summary"]
+            "test-session", str(test_project_dir), TestData.SAMPLE_SESSION["message"]
         )
 
         # 測試初始狀態
@@ -124,7 +149,7 @@ class TestWebFeedbackSession:
         from mcp_feedback_enhanced.web.models import WebFeedbackSession
 
         session = WebFeedbackSession(
-            "test-session", str(test_project_dir), TestData.SAMPLE_SESSION["summary"]
+            "test-session", str(test_project_dir), TestData.SAMPLE_SESSION["message"]
         )
 
         # 測試年齡計算
@@ -146,7 +171,7 @@ class TestWebFeedbackSession:
         )
 
         session = WebFeedbackSession(
-            "test-session", str(test_project_dir), TestData.SAMPLE_SESSION["summary"]
+            "test-session", str(test_project_dir), TestData.SAMPLE_SESSION["message"]
         )
 
         # 提交回饋
@@ -179,19 +204,34 @@ class TestWebUIRoutes:
 
     @pytest.mark.asyncio
     async def test_index_route_with_session(self, web_ui_manager, test_project_dir):
-        """測試主頁路由（有會話）"""
+        """測試主頁路由（單一活躍會話時跳轉到具體會話頁）"""
         from fastapi.testclient import TestClient
 
         # 創建會話
-        web_ui_manager.create_session(
-            str(test_project_dir), TestData.SAMPLE_SESSION["summary"]
+        session_id = web_ui_manager.create_session(
+            str(test_project_dir), TestData.SAMPLE_SESSION["message"]
         )
 
         client = TestClient(web_ui_manager.app)
-        response = client.get("/")
+        response = client.get("/", follow_redirects=False)
+
+        assert response.status_code == 307
+        assert response.headers["location"].endswith(f"/session/{session_id}")
+
+    @pytest.mark.asyncio
+    async def test_session_route_by_id(self, web_ui_manager, test_project_dir):
+        """測試按 session_id 訪問具體會話頁。"""
+        from fastapi.testclient import TestClient
+
+        session_id = web_ui_manager.create_session(
+            str(test_project_dir), TestData.SAMPLE_SESSION["message"]
+        )
+
+        client = TestClient(web_ui_manager.app)
+        response = client.get(f"/session/{session_id}")
 
         assert response.status_code == 200
-        assert TestData.SAMPLE_SESSION["summary"] in response.text
+        assert TestData.SAMPLE_SESSION["message"] in response.text
 
     @pytest.mark.asyncio
     async def test_api_current_session(self, web_ui_manager, test_project_dir):
@@ -200,7 +240,7 @@ class TestWebUIRoutes:
 
         # 創建會話
         session_id = web_ui_manager.create_session(
-            str(test_project_dir), TestData.SAMPLE_SESSION["summary"]
+            str(test_project_dir), TestData.SAMPLE_SESSION["message"]
         )
 
         client = TestClient(web_ui_manager.app)
@@ -209,8 +249,26 @@ class TestWebUIRoutes:
         assert response.status_code == 200
         data = response.json()
         assert data["session_id"] == session_id
-        assert data["project_directory"] == str(test_project_dir)
-        assert data["summary"] == TestData.SAMPLE_SESSION["summary"]
+        assert Path(data["project_directory"]).resolve() == test_project_dir.resolve()
+        assert data["message"] == TestData.SAMPLE_SESSION["message"]
+
+    @pytest.mark.asyncio
+    async def test_api_current_session_ambiguous(self, web_ui_manager, temp_dir):
+        """測試多活躍會話時兼容接口返回歧義錯誤。"""
+        from fastapi.testclient import TestClient
+
+        workspace_a = temp_dir / "workspace_a"
+        workspace_b = temp_dir / "workspace_b"
+        workspace_a.mkdir()
+        workspace_b.mkdir()
+
+        web_ui_manager.create_session(str(workspace_a), "工作區 A")
+        web_ui_manager.create_session(str(workspace_b), "工作區 B")
+
+        client = TestClient(web_ui_manager.app)
+        response = client.get("/api/current-session")
+
+        assert response.status_code == 409
 
 
 class TestWebUIUtilities:

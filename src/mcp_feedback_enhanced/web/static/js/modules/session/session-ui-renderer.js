@@ -147,7 +147,7 @@
         if (!isNewSession && self.lastRenderedData.currentSessionId === sessionData.session_id &&
             self.currentSessionData &&
             self.currentSessionData.status === sessionData.status &&
-            self.currentSessionData.summary === sessionData.summary) {
+            (self.currentSessionData.message || self.currentSessionData.summary) === (sessionData.message || sessionData.summary)) {
             // 數據沒有重要變化，跳過渲染
             return;
         }
@@ -343,7 +343,7 @@
         const summaryElement = this.currentSessionCard.querySelector('.session-summary');
         if (summaryElement) {
             const noSummaryText = window.i18nManager ? window.i18nManager.t('sessionManagement.noSummary') : '無摘要';
-            const summary = sessionData.summary || noSummaryText;
+            const summary = sessionData.message || sessionData.summary || noSummaryText;
             const summaryLabel = window.i18nManager ? window.i18nManager.t('sessionManagement.aiSummary') : 'AI 摘要';
             DOMUtils.safeSetTextContent(summaryElement, summaryLabel + ': ' + summary);
         }

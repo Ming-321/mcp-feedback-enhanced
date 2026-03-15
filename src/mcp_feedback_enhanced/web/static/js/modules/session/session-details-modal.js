@@ -102,7 +102,7 @@
             createdTime: createdTime,
             duration: duration,
             projectDirectory: sessionData.project_directory || (window.i18nManager ? window.i18nManager.t('sessionManagement.sessionDetails.unknown') : '未知'),
-            summary: sessionData.summary || (window.i18nManager ? window.i18nManager.t('sessionManagement.sessionDetails.noSummary') : '暫無摘要'),
+            summary: sessionData.message || sessionData.summary || (window.i18nManager ? window.i18nManager.t('sessionManagement.sessionDetails.noSummary') : '暫無摘要'),
             userMessages: userMessages,
             userMessageCount: userMessageCount
         };
@@ -457,8 +457,8 @@
 
         try {
             // 獲取原始摘要內容（Markdown 原始碼）
-            const summaryContent = this.currentSessionData && this.currentSessionData.summary ?
-                this.currentSessionData.summary : '';
+            const summaryContent = this.currentSessionData ?
+                (this.currentSessionData.message || this.currentSessionData.summary || '') : '';
 
             if (!summaryContent) {
                 console.warn('⚠️ 沒有摘要內容可複製');

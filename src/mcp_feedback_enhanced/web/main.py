@@ -8,6 +8,7 @@ Web UI 主要管理類
 
 import asyncio
 import concurrent.futures
+import hashlib
 import os
 import threading
 import time
@@ -26,10 +27,22 @@ from ..debug import web_debug_log as debug_log
 from ..utils.error_handler import ErrorHandler, ErrorType
 from ..utils.memory_monitor import get_memory_monitor
 from .models import CleanupReason, SessionStatus, WebFeedbackSession
+from .constants import get_message_code
 from .routes import setup_routes
 from .utils import get_browser_opener
 from .utils.compression_config import get_compression_manager
 from .utils.port_manager import PortManager
+
+
+def _normalize_workspace_key(project_directory: str) -> str:
+    """將工作區路徑規範化為可穩定比較的 key。"""
+    return os.path.abspath(os.path.expanduser(project_directory))
+
+
+def _derive_workspace_label(project_directory: str) -> str:
+    """取得工作區的短名稱。"""
+    workspace_path = Path(project_directory)
+    return workspace_path.name or str(workspace_path)
 
 
 class WebUIManager:
@@ -113,6 +126,7 @@ class WebUIManager:
         # 重構：使用單一活躍會話而非會話字典
         self.current_session: WebFeedbackSession | None = None
         self.sessions: dict[str, WebFeedbackSession] = {}  # 保留用於向後兼容
+        self.active_workspace_sessions: dict[str, str] = {}
 
         # 全局標籤頁狀態管理 - 跨會話保持
         self.global_active_tabs: dict[str, dict] = {}
@@ -326,74 +340,127 @@ class WebUIManager:
         else:
             raise RuntimeError(f"Templates directory not found: {web_templates_path}")
 
-    def create_session(self, project_directory: str, summary: str) -> str:
-        """創建新的回饋會話 - 重構為單一活躍會話模式，保留標籤頁狀態"""
-        # 保存舊會話的引用和 WebSocket 連接
-        old_session = self.current_session
-        old_websocket = None
-        if old_session and old_session.websocket:
-            old_websocket = old_session.websocket
-            debug_log("保存舊會話的 WebSocket 連接以發送更新通知")
+    def _get_workspace_session_ids(self, workspace_key: str) -> list[str]:
+        """獲取指定工作區下的所有會話 ID。"""
+        return [
+            session_id
+            for session_id, session in self.sessions.items()
+            if session.workspace_key == workspace_key
+        ]
 
-        # 創建新會話
-        session_id = str(uuid.uuid4())
-        session = WebFeedbackSession(session_id, project_directory, summary)
+    def _remove_workspace_index(self, session: WebFeedbackSession):
+        """在索引中移除會話。"""
+        latest_session_id = self.active_workspace_sessions.get(session.workspace_key)
+        if latest_session_id == session.session_id:
+            self.active_workspace_sessions.pop(session.workspace_key, None)
 
-        # 如果有舊會話，處理狀態轉換和清理
-        if old_session:
-            debug_log(
-                f"處理舊會話 {old_session.session_id} 的狀態轉換，當前狀態: {old_session.status.value}"
+    def _refresh_workspace_display_names(self):
+        """刷新所有會話的工作區顯示名稱，避免同名工作區混淆。"""
+        if not self.active_workspace_sessions:
+            return
+
+        workspace_paths = {
+            workspace_key: Path(workspace_key)
+            for workspace_key in self.active_workspace_sessions
+        }
+        label_counts: dict[str, int] = {}
+
+        for workspace_path in workspace_paths.values():
+            label = workspace_path.name or str(workspace_path)
+            label_counts[label] = label_counts.get(label, 0) + 1
+
+        display_names: dict[str, str] = {}
+        used_display_names: set[str] = set()
+
+        for workspace_key, workspace_path in workspace_paths.items():
+            label = workspace_path.name or str(workspace_path)
+            display_name = label
+
+            if label_counts[label] > 1:
+                parent_name = workspace_path.parent.name or workspace_path.parent.as_posix()
+                display_name = f"{label} ({parent_name})"
+
+            if display_name in used_display_names:
+                short_hash = hashlib.sha1(workspace_key.encode("utf-8")).hexdigest()[:6]
+                display_name = f"{display_name} [{short_hash}]"
+
+            used_display_names.add(display_name)
+            display_names[workspace_key] = display_name
+
+        for session in self.sessions.values():
+            session.workspace_display_name = display_names.get(
+                session.workspace_key, session.workspace_label
             )
 
-            # 保存標籤頁狀態到全局
-            if hasattr(old_session, "active_tabs"):
-                self._merge_tabs_to_global(old_session.active_tabs)
+    def get_active_sessions(self) -> list[WebFeedbackSession]:
+        """獲取所有活躍會話。"""
+        return [session for session in self.sessions.values() if session.is_active()]
 
-            # 如果舊會話是已提交狀態，進入下一步（已完成）
-            if old_session.status == SessionStatus.FEEDBACK_SUBMITTED:
-                debug_log(
-                    f"舊會話 {old_session.session_id} 進入下一步：已提交 → 已完成"
-                )
-                success = old_session.next_step("反饋已處理，會話完成")
-                if success:
-                    debug_log(f"✅ 舊會話 {old_session.session_id} 成功進入已完成狀態")
-                else:
-                    debug_log(f"❌ 舊會話 {old_session.session_id} 無法進入下一步")
-            else:
-                debug_log(
-                    f"舊會話 {old_session.session_id} 狀態為 {old_session.status.value}，無需轉換"
-                )
+    def get_active_session_count(self) -> int:
+        """獲取活躍會話數量。"""
+        return len(self.get_active_sessions())
 
-            # 確保舊會話仍在字典中（用於API獲取）
-            if old_session.session_id in self.sessions:
-                debug_log(f"舊會話 {old_session.session_id} 仍在會話字典中")
-            else:
-                debug_log(f"⚠️ 舊會話 {old_session.session_id} 不在會話字典中，重新添加")
-                self.sessions[old_session.session_id] = old_session
+    def get_single_active_session(self) -> WebFeedbackSession | None:
+        """僅在只有一個活躍會話時返回，否則返回 None。"""
+        active_sessions = self.get_active_sessions()
+        if len(active_sessions) == 1:
+            return active_sessions[0]
+        return None
 
-            # 同步清理會話資源（但保留 WebSocket 連接）
-            old_session._cleanup_sync()
+    def get_latest_workspace_session(
+        self, workspace_key: str
+    ) -> WebFeedbackSession | None:
+        """獲取工作區最新會話。"""
+        session_id = self.active_workspace_sessions.get(workspace_key)
+        if not session_id:
+            return None
+        return self.sessions.get(session_id)
+
+    def create_session(self, project_directory: str, message: str) -> str:
+        """創建新的回饋會話，並以工作區為單位維護最新活躍會話。"""
+        project_directory = _normalize_workspace_key(project_directory)
+        workspace_key = project_directory
+        workspace_label = _derive_workspace_label(project_directory)
+        previous_workspace_session = self.get_latest_workspace_session(workspace_key)
+
+        session_id = str(uuid.uuid4())
+        session = WebFeedbackSession(
+            session_id,
+            project_directory,
+            message,
+            workspace_key=workspace_key,
+            workspace_label=workspace_label,
+            workspace_display_name=workspace_label,
+        )
 
         # 將全局標籤頁狀態繼承到新會話
         session.active_tabs = self.global_active_tabs.copy()
 
-        # 設置為當前活躍會話
+        if previous_workspace_session:
+            session.replaced_session_id = previous_workspace_session.session_id
+            debug_log(
+                f"工作區 {workspace_key} 已存在會話 {previous_workspace_session.session_id}，"
+                f"新會話 {session_id} 將取代它"
+            )
+
+            if previous_workspace_session.status == SessionStatus.FEEDBACK_SUBMITTED:
+                previous_workspace_session.next_step("同工作區已有新會話建立，舊會話已完成")
+            elif previous_workspace_session.is_active():
+                previous_workspace_session.set_superseded(
+                    session_id,
+                    "同工作區已有新的回饋會話建立，舊會話已結束",
+                )
+
         self.current_session = session
-        # 同時保存到字典中以保持向後兼容
         self.sessions[session_id] = session
+        self.active_workspace_sessions[workspace_key] = session_id
+        self._refresh_workspace_display_names()
 
-        debug_log(f"創建新的活躍會話: {session_id}")
+        debug_log(
+            f"創建新的工作區會話: {session_id}，"
+            f"workspace={workspace_key}，display={session.workspace_display_name}"
+        )
         debug_log(f"繼承 {len(session.active_tabs)} 個活躍標籤頁")
-
-        # 處理WebSocket連接轉移
-        if old_websocket:
-            # 直接轉移連接到新會話，消息發送由 smart_open_browser 統一處理
-            session.websocket = old_websocket
-            debug_log("已將舊 WebSocket 連接轉移到新會話")
-        else:
-            # 沒有舊連接，標記需要發送會話更新通知（當新 WebSocket 連接建立時）
-            self._pending_session_update = True
-            debug_log("沒有舊 WebSocket 連接，設置待更新標記")
 
         return session_id
 
@@ -402,7 +469,7 @@ class WebUIManager:
         return self.sessions.get(session_id)
 
     def get_current_session(self) -> WebFeedbackSession | None:
-        """獲取當前活躍會話"""
+        """獲取最新建立的會話（兼容舊接口）。"""
         return self.current_session
 
     def remove_session(self, session_id: str):
@@ -410,12 +477,15 @@ class WebUIManager:
         if session_id in self.sessions:
             session = self.sessions[session_id]
             session.cleanup()
+            self._remove_workspace_index(session)
             del self.sessions[session_id]
 
             # 如果移除的是當前活躍會話，清空當前會話
             if self.current_session and self.current_session.session_id == session_id:
                 self.current_session = None
                 debug_log("清空當前活躍會話")
+
+            self._refresh_workspace_display_names()
 
             debug_log(f"移除回饋會話: {session_id}")
 
@@ -424,11 +494,14 @@ class WebUIManager:
         if self.current_session:
             session_id = self.current_session.session_id
             self.current_session.cleanup()
+            self._remove_workspace_index(self.current_session)
             self.current_session = None
 
             # 同時從字典中移除
             if session_id in self.sessions:
                 del self.sessions[session_id]
+
+            self._refresh_workspace_display_names()
 
             debug_log("已清空當前活躍會話")
 
@@ -619,35 +692,64 @@ class WebUIManager:
         except Exception as e:
             debug_log(f"無法開啟瀏覽器: {e}")
 
-    async def smart_open_browser(self, url: str) -> bool:
-        """智能開啟瀏覽器 - 檢測是否已有活躍標籤頁
+    async def _notify_workspace_session_replacement(
+        self, previous_session: WebFeedbackSession, new_session: WebFeedbackSession
+    ) -> bool:
+        """通知同工作區的舊頁面切換到新會話。"""
+        if not previous_session.websocket:
+            return False
 
-        Returns:
-            bool: True 表示檢測到活躍標籤頁或桌面模式，False 表示開啟了新視窗
-        """
+        navigate_to = self.get_session_url(new_session.session_id)
 
         try:
-            # 檢查是否為桌面模式
+            await previous_session.websocket.send_json(
+                {
+                    "type": "session_updated",
+                    "action": "workspace_session_replaced",
+                    "messageCode": get_message_code("new_session_created"),
+                    "session_info": {
+                        "session_id": new_session.session_id,
+                        "project_directory": new_session.project_directory,
+                        "message": new_session.message,
+                        "status": new_session.status.value,
+                        "workspace_display_name": new_session.workspace_display_name,
+                    },
+                    "navigate_to": navigate_to,
+                }
+            )
+            debug_log(
+                f"已通知工作區頁面切換: "
+                f"{previous_session.session_id} → {new_session.session_id}"
+            )
+            return True
+        except Exception as e:
+            debug_log(f"通知工作區頁面切換失敗: {e}")
+            return False
+
+    async def smart_open_browser_for_session(self, session: WebFeedbackSession) -> bool:
+        """按工作區智能開啟瀏覽器。
+
+        Returns:
+            bool: True 表示復用現有同工作區頁面，False 表示新開頁面。
+        """
+        url = self.get_session_url(session.session_id)
+
+        try:
             if os.environ.get("MCP_DESKTOP_MODE", "").lower() == "true":
                 debug_log("檢測到桌面模式，跳過瀏覽器開啟")
                 return True
 
-            # 檢查是否有活躍標籤頁
-            has_active_tabs = await self._check_active_tabs()
+            previous_session = None
+            if session.replaced_session_id:
+                previous_session = self.get_session(session.replaced_session_id)
 
-            if has_active_tabs:
-                debug_log("檢測到活躍標籤頁，發送刷新通知")
-                debug_log(f"向現有標籤頁發送刷新通知：{url}")
+            if previous_session and await self._check_session_websocket(previous_session):
+                if await self._notify_workspace_session_replacement(
+                    previous_session, session
+                ):
+                    return True
 
-                # 向現有標籤頁發送刷新通知
-                refresh_success = await self.notify_existing_tab_to_refresh()
-
-                debug_log(f"刷新通知發送結果: {refresh_success}")
-                debug_log("檢測到活躍標籤頁，不開啟新瀏覽器視窗")
-                return True
-
-            # 沒有活躍標籤頁，開啟新瀏覽器視窗
-            debug_log("沒有檢測到活躍標籤頁，開啟新瀏覽器視窗")
+            debug_log(f"開啟新瀏覽器頁面：{url}")
             self.open_browser(url)
             return False
 
@@ -757,107 +859,60 @@ class WebUIManager:
         except Exception as e:
             debug_log(f"檢查 WebSocket 連接狀態時發生錯誤: {e}")
 
-    async def notify_existing_tab_to_refresh(self) -> bool:
-        """通知現有標籤頁刷新顯示新會話內容
-
-        Returns:
-            bool: True 表示成功發送，False 表示失敗
-        """
+    async def _check_session_websocket(self, session: WebFeedbackSession) -> bool:
+        """檢查指定會話的 WebSocket 是否仍然活躍。"""
         try:
-            if not self.current_session or not self.current_session.websocket:
-                debug_log("沒有活躍的WebSocket連接，無法發送刷新通知")
+            if not session.websocket:
+                debug_log(f"會話 {session.session_id} 沒有 WebSocket 連接")
                 return False
 
-            # 構建刷新通知消息
-            refresh_message = {
-                "type": "session_updated",
-                "action": "new_session_created",
-                "messageCode": "session.created",
-                "session_info": {
-                    "session_id": self.current_session.session_id,
-                    "project_directory": self.current_session.project_directory,
-                    "summary": self.current_session.summary,
-                    "status": self.current_session.status.value,
-                },
-            }
-
-            # 發送刷新通知
-            await self.current_session.websocket.send_json(refresh_message)
-            debug_log(f"已向現有標籤頁發送刷新通知: {self.current_session.session_id}")
-
-            # 簡單等待一下讓消息發送完成
-            await asyncio.sleep(0.2)
-            debug_log("刷新通知發送完成")
-            return True
-
-        except Exception as e:
-            debug_log(f"發送刷新通知失敗: {e}")
-            return False
-
-    async def _check_active_tabs(self) -> bool:
-        """檢查是否有活躍標籤頁 - 使用分層檢測機制"""
-        try:
-            # 快速檢測層：檢查 WebSocket 物件是否存在
-            if not self.current_session or not self.current_session.websocket:
-                debug_log("快速檢測：沒有當前會話或 WebSocket 連接")
-                return False
-
-            # 檢查心跳（如果有心跳記錄）
-            last_heartbeat = getattr(self.current_session, "last_heartbeat", None)
+            last_heartbeat = getattr(session, "last_heartbeat", None)
             if last_heartbeat:
                 heartbeat_age = time.time() - last_heartbeat
-                if heartbeat_age > 10:  # 超過 10 秒沒有心跳
-                    debug_log(f"快速檢測：心跳超時 ({heartbeat_age:.1f}秒)")
-                    # 可能連接已死，需要進一步檢測
+                if heartbeat_age > 10:
+                    debug_log(
+                        f"會話 {session.session_id} 心跳超時 ({heartbeat_age:.1f}秒)"
+                    )
                 else:
-                    debug_log(f"快速檢測：心跳正常 ({heartbeat_age:.1f}秒前)")
-                    return True  # 心跳正常，認為連接活躍
+                    return True
 
-            # 準確檢測層：實際測試連接是否活著
             try:
-                # 檢查 WebSocket 連接狀態
-                websocket = self.current_session.websocket
+                websocket = session.websocket
 
-                # 檢查連接是否已關閉
                 if hasattr(websocket, "client_state"):
                     try:
-                        # 嘗試從 starlette 導入（FastAPI 基於 Starlette）
                         import starlette.websockets  # type: ignore[import-not-found]
 
                         if hasattr(starlette.websockets, "WebSocketState"):
                             WebSocketState = starlette.websockets.WebSocketState
                             if websocket.client_state != WebSocketState.CONNECTED:
                                 debug_log(
-                                    f"準確檢測：WebSocket 狀態不是 CONNECTED，而是 {websocket.client_state}"
+                                    f"會話 {session.session_id} 的 WebSocket 狀態不是 CONNECTED"
                                 )
-                                # 清理死連接
-                                self.current_session.websocket = None
+                                session.websocket = None
                                 return False
                     except ImportError:
-                        # 如果導入失敗，使用替代方法
-                        debug_log("無法導入 WebSocketState，使用替代方法檢測連接")
-                        # 跳過狀態檢查，直接測試連接
+                        debug_log("無法導入 WebSocketState，跳過狀態檢查")
 
-                # 如果連接看起來是活的，嘗試發送 ping（非阻塞）
-                # 注意：FastAPI WebSocket 沒有內建的 ping 方法，這裡使用自定義消息
                 await websocket.send_json({"type": "ping", "timestamp": time.time()})
-                debug_log("準確檢測：成功發送 ping 消息，連接是活躍的")
                 return True
 
             except Exception as e:
-                debug_log(f"準確檢測：連接測試失敗 - {e}")
-                # 連接已死，清理它
-                if self.current_session:
-                    self.current_session.websocket = None
+                debug_log(f"會話 {session.session_id} 的 WebSocket 測試失敗: {e}")
+                session.websocket = None
                 return False
 
         except Exception as e:
-            debug_log(f"檢查活躍連接時發生錯誤：{e}")
+            debug_log(f"檢查會話 {session.session_id} 的活躍連接時發生錯誤：{e}")
             return False
 
     def get_server_url(self) -> str:
         """獲取伺服器 URL"""
         return f"http://{self.host}:{self.port}"
+
+    def get_session_url(self, session_id: str) -> str:
+        """獲取指定會話的頁面 URL。"""
+        return f"{self.get_server_url()}/session/{session_id}"
 
     def cleanup_expired_sessions(self) -> int:
         """清理過期會話"""
@@ -877,6 +932,7 @@ class WebUIManager:
                     session = self.sessions[session_id]
                     # 使用增強清理方法
                     session._cleanup_sync_enhanced(CleanupReason.EXPIRED)
+                    self._remove_workspace_index(session)
                     del self.sessions[session_id]
                     cleaned_count += 1
 
@@ -887,6 +943,8 @@ class WebUIManager:
                     ):
                         self.current_session = None
                         debug_log("清空過期的當前活躍會話")
+
+                    self._refresh_workspace_display_names()
 
             except Exception as e:
                 error_id = ErrorHandler.log_error_with_context(
@@ -925,12 +983,8 @@ class WebUIManager:
         # 根據優先級選擇要清理的會話
         # 優先級：已完成 > 已提交反饋 > 錯誤狀態 > 空閒時間最長
         for session_id, session in self.sessions.items():
-            # 跳過當前活躍會話（除非強制清理）
-            if (
-                not force
-                and self.current_session
-                and session.session_id == self.current_session.session_id
-            ):
+            # 跳過仍在活躍中的會話（除非強制清理）
+            if not force and session.is_active():
                 continue
 
             # 優先清理已完成或錯誤狀態的會話
@@ -961,6 +1015,7 @@ class WebUIManager:
             try:
                 # 使用增強清理方法
                 session._cleanup_sync_enhanced(CleanupReason.MEMORY_PRESSURE)
+                self._remove_workspace_index(session)
                 del self.sessions[session_id]
                 cleaned_count += 1
 
@@ -971,6 +1026,8 @@ class WebUIManager:
                 ):
                     self.current_session = None
                     debug_log("因內存壓力清空當前活躍會話")
+
+                self._refresh_workspace_display_names()
 
             except Exception as e:
                 error_id = ErrorHandler.log_error_with_context(
@@ -1011,7 +1068,8 @@ class WebUIManager:
         stats = self.cleanup_stats.copy()
         stats.update(
             {
-                "active_sessions": len(self.sessions),
+                "active_sessions": len(self.get_active_sessions()),
+                "active_workspace_sessions": len(self.active_workspace_sessions),
                 "current_session_id": self.current_session.session_id
                 if self.current_session
                 else None,
@@ -1059,6 +1117,7 @@ class WebUIManager:
                 debug_log(f"停止服務時清理會話失敗: {e}")
 
         self.sessions.clear()
+        self.active_workspace_sessions.clear()
         self.current_session = None
 
         # 更新統計
@@ -1097,14 +1156,14 @@ def get_web_ui_manager() -> WebUIManager:
 
 
 async def launch_web_feedback_ui(
-    project_directory: str, summary: str, timeout: int = 600
+    project_directory: str, message: str, timeout: int = 600
 ) -> dict:
     """
     啟動 Web 回饋介面並等待用戶回饋 - 重構為使用根路徑
 
     Args:
         project_directory: 專案目錄路徑
-        summary: AI 工作摘要
+        message: AI 發給用戶的說明或提問內容
         timeout: 超時時間（秒）
 
     Returns:
@@ -1112,9 +1171,9 @@ async def launch_web_feedback_ui(
     """
     manager = get_web_ui_manager()
 
-    # 創建新會話（每次AI調用都應該創建新會話）
-    manager.create_session(project_directory, summary)
-    session = manager.get_current_session()
+    # 創建新會話（每次 AI 調用都應該創建新會話）
+    session_id = manager.create_session(project_directory, message)
+    session = manager.get_session(session_id)
 
     if not session:
         raise RuntimeError("無法創建回饋會話")
@@ -1126,16 +1185,15 @@ async def launch_web_feedback_ui(
     # 檢查是否為桌面模式
     desktop_mode = os.environ.get("MCP_DESKTOP_MODE", "").lower() == "true"
 
-    # 使用根路徑 URL
-    feedback_url = manager.get_server_url()  # 直接使用根路徑
+    feedback_url = manager.get_session_url(session.session_id)
 
     if desktop_mode:
         # 桌面模式：啟動桌面應用程式
         debug_log("檢測到桌面模式，啟動桌面應用程式...")
         has_active_tabs = await manager.launch_desktop_app(feedback_url)
     else:
-        # Web 模式：智能開啟瀏覽器
-        has_active_tabs = await manager.smart_open_browser(feedback_url)
+        # Web 模式：按工作區智能開啟瀏覽器
+        has_active_tabs = await manager.smart_open_browser_for_session(session)
 
     debug_log(f"[DEBUG] 服務器地址: {feedback_url}")
 
@@ -1176,7 +1234,7 @@ if __name__ == "__main__":
     async def main():
         try:
             project_dir = os.getcwd()
-            summary = """# Markdown 功能測試
+            message = """# Markdown 功能測試
 
 ## 🎯 任務完成摘要
 
@@ -1198,7 +1256,7 @@ if __name__ == "__main__":
 
 ```javascript
 // 使用 marked.js 進行 Markdown 解析
-const renderedContent = this.renderMarkdownSafely(summary);
+const renderedContent = this.renderMarkdownSafely(message);
 element.innerHTML = renderedContent;
 ```
 
@@ -1219,7 +1277,7 @@ element.innerHTML = renderedContent;
             debug_log(f"專案目錄: {project_dir}")
             debug_log("等待用戶回饋...")
 
-            result = await launch_web_feedback_ui(project_dir, summary)
+            result = await launch_web_feedback_ui(project_dir, message)
 
             debug_log("收到回饋結果:")
             debug_log(f"命令日誌: {result.get('logs', '')}")

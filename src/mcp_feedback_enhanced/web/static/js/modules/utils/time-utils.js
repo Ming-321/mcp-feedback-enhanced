@@ -395,8 +395,9 @@
             let estimatedMinutes = 2;
 
             // 根據摘要長度調整
-            if (sessionData.summary) {
-                const summaryLength = sessionData.summary.length;
+            const summaryText = sessionData.message || sessionData.summary;
+            if (summaryText) {
+                const summaryLength = summaryText.length;
                 if (summaryLength > 100) {
                     estimatedMinutes += Math.floor(summaryLength / 50);
                 }

@@ -27,7 +27,7 @@ sequenceDiagram
     participant User as 用戶
 
     Note over AI,User: 🚀 第一次調用流程
-    AI->>+MCP: interactive_feedback(project_dir, summary, timeout)
+    AI->>+MCP: feedback(project_dir, message, timeout)
     MCP->>+WM: launch_web_feedback_ui()
 
     Note over WM: 環境檢測與會話創建
@@ -60,7 +60,7 @@ sequenceDiagram
     MCP-->>-AI: 返回回饋結果
 
     Note over AI,User: 🔄 第二次調用流程 (持久化會話)
-    AI->>+MCP: interactive_feedback(new_summary, timeout)
+    AI->>+MCP: feedback(new_message, timeout)
     MCP->>+WM: 檢查現有會話
 
     alt 有活躍會話
@@ -96,23 +96,23 @@ sequenceDiagram
 **MCP 工具調用格式**：
 ```python
 # AI 助手通過 MCP 協議調用
-result = await interactive_feedback(
+result = await feedback(
     project_directory="./my-project",
-    summary="我已完成了功能 X 的實現，請檢查代碼品質和邏輯正確性。主要變更包括：\n1. 新增錯誤處理機制\n2. 優化性能瓶頸\n3. 增加單元測試覆蓋率",
+    message="我已完成了功能 X 的實現，請檢查代碼品質和邏輯正確性。主要變更包括：\n1. 新增錯誤處理機制\n2. 優化性能瓶頸\n3. 增加單元測試覆蓋率",
     timeout=600  # 10 分鐘超時
 )
 ```
 
 **參數說明**：
 - `project_directory`: 專案根目錄，用於命令執行上下文
-- `summary`: AI 工作摘要，向用戶說明已完成的工作
+- `message`: AI 發給用戶的說明或提問內容
 - `timeout`: 等待用戶回饋的超時時間（秒）
 
 ### 2. MCP 服務處理流程
 
 ```mermaid
 flowchart TD
-    START[AI 調用 interactive_feedback] --> VALIDATE[參數驗證與類型檢查]
+    START[AI 調用 feedback] --> VALIDATE[參數驗證與類型檢查]
     VALIDATE --> ENV[環境檢測<br/>Local/SSH/WSL]
     ENV --> MANAGER[獲取 WebUIManager<br/>單例實例]
     MANAGER --> CHECK[檢查現有會話]
@@ -205,7 +205,7 @@ def get_environment_config(env_type: str) -> dict:
 async def create_or_update_session(
     self,
     project_dir: str,
-    summary: str,
+    message: str,
     timeout: int
 ) -> str:
     """創建新會話或更新現有會話"""
@@ -221,7 +221,7 @@ async def create_or_update_session(
     self.current_session = WebFeedbackSession(
         session_id=session_id,
         project_directory=os.path.abspath(project_dir),
-        summary=summary,
+        message=message,
         timeout=timeout,
         status=SessionStatus.WAITING,
         created_at=datetime.now()
@@ -375,7 +375,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 "type": "session_updated",
                 "data": {
                     "session_id": manager.current_session.session_id,
-                    "summary": manager.current_session.summary,
+                    "message": manager.current_session.message,
                     "project_directory": manager.current_session.project_directory
                 }
             })
@@ -428,9 +428,9 @@ stateDiagram-v2
 #### 1. AI 助手再次調用
 ```python
 # AI 根據用戶回饋進行調整後再次調用
-result = await interactive_feedback(
+result = await feedback(
     project_directory="./my-project",
-    summary="根據您的建議，我已修改了錯誤處理邏輯，請再次確認",
+    message="根據您的建議，我已修改了錯誤處理邏輯，請再次確認",
     timeout=600
 )
 ```
@@ -460,7 +460,7 @@ function handleSessionUpdated(data) {
     feedbackState = 'FEEDBACK_WAITING';
 
     // 局部更新 AI 摘要
-    updateAISummary(data.summary);
+    updateAISummary(data.message);
 
     // 清空回饋表單
     clearFeedbackForm();
@@ -565,7 +565,7 @@ sequenceDiagram
     participant UI as 前端界面
 
     Note over AI,UI: 📊 會話生命週期管理（v2.4.3 重構）
-    AI->>Server: interactive_feedback()
+    AI->>Server: feedback()
     Server->>SM: createSession()
     SM->>SDM: addCurrentSession()
     SDM->>SUR: renderCurrentSession()
